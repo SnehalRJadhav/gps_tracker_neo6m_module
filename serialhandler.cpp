@@ -1,6 +1,7 @@
 #include "serialhandler.h"
 
-SerialWorker::SerialWorker(CSerialHandler* handler) : m_handler(handler) {}
+SerialWorker::SerialWorker(CSerialHandler* handler) : m_handler(handler) {
+}
 
 void SerialWorker::processData() {
   while (m_handler->m_serial.bytesAvailable()) {
@@ -15,11 +16,7 @@ void SerialWorker::processData() {
 
 CSerialHandler::CSerialHandler(QObject* parent)
   : QObject{parent} {
-
-  m_loggingTimer = new QTimer(this);
-  connect(m_loggingTimer, &QTimer::timeout, this, &CSerialHandler::logData);
-  m_loggingTimer->start(3000);
-
+  database.initDatabase();
 
   moveToThread(QGuiApplication::instance()->thread());
   QList<QSerialPortInfo> availablePorts = QSerialPortInfo::availablePorts();
@@ -89,41 +86,41 @@ void CSerialHandler::readData() {
   }
 }
 
-void CSerialHandler::logData() {
-  QGeoCoordinate coord = m_currentCoordinate;
-  QDateTime dateTime = m_currentDateTime;
-  logToCSV(coord, dateTime);
-
-}
 
 void CSerialHandler::parseNMEASentence(const QString& sentence) {
-  qDebug() << sentence;
-  QStringList parts = sentence.split(",");
   if (sentence.startsWith("$GPRMC")) {
+    QStringList parts = sentence.split(",");
     if (parts.size() > 9 && parts[2] == "A") {
       QString latStr = parts[3];
       QString lonStr = parts[5];
 
       double lat = convertToDecimal(latStr, parts[4]);
       double lon = convertToDecimal(lonStr, parts[6]);
+      double speed = parts[7].toDouble();
+      m_speed = convertToKiloMeterPerHour(speed);
+      double heading = parts[8].toDouble();
+      qDebug() << "Speed : " << speed << " Heading : " << heading;
+
 
       m_currentCoordinate = QGeoCoordinate(lat, lon);
-      qDebug() << "m_currentCoordinate : " << m_currentCoordinate;
       QDateTime gpsDateTime = parseDateTime(sentence);
       QTimeZone localTimeZone = QTimeZone::systemTimeZone();
 
-      qDebug() << "gpsDateTime : " << gpsDateTime.toTimeZone(localTimeZone);
       m_currentDateTime = gpsDateTime;
       QMetaObject::invokeMethod(
           this, [this, gpsDateTime]() {
               emit currentCoordinateChanged(m_currentCoordinate);
               emit currentDateTimeChanged(gpsDateTime);
+              emit speedChanged(m_speed);
+              emit compassHeadingChanged(m_compassHeading);
           }, Qt::QueuedConnection
       );
+      database.insertData(lat, lon, speed, heading, gpsDateTime, sentence);
     } else {
       qWarning() << "Invalid GPRMC sentence or insufficient fields:" << sentence;
     }
   } else if (sentence.startsWith("$GPGGA")) {
+    QStringList parts = sentence.split(",");
     if (parts.size() > 10 && parts[6] != '0') {
 
       QString ggaLatStr = parts[2];
@@ -132,9 +129,10 @@ void CSerialHandler::parseNMEASentence(const QString& sentence) {
       double ggaLat = convertToDecimal(ggaLatStr, parts[3]);
       double ggaLon = convertToDecimal(ggaLonStr, parts[5]);
 
-      QString satelliteCount = parts[7];
+      int satelliteCount = parts[7].toInt();
       QString altitude = parts[9];
-      qDebug() << "Lat : " << ggaLat << "\nLon : " << ggaLon << "\nsatellite count : " << satelliteCount << "\n Altitude : " << altitude;
+      m_satelliteCount = satelliteCount;
+      emit satelliteCountChanged(m_satelliteCount);
 
     } else {
       qDebug() << "Invalid GPGGA sentence or insufficient fields:" << sentence;
@@ -148,34 +146,36 @@ QDateTime CSerialHandler::parseDateTime(const QString& sentence) {
   QString timeStr = parts[1];
   QString dateStr = parts[9];
 
+
+  bool okTime = true;
+  bool okDate = true;
+
   QTime time;
   if (!timeStr.isEmpty() && timeStr.length() >= 6) {
-    bool ok;
     QString cleanTime = timeStr.left(6);
-    int hours = cleanTime.mid(0, 2).toInt(&ok);
-    int minute = cleanTime.mid(2, 2).toInt(&ok);
-    int seconds = cleanTime.mid(4, 2).toInt(&ok);
+    int hours = cleanTime.mid(0, 2).toInt(&okTime);
+    int minute = cleanTime.mid(2, 2).toInt(&okTime);
+    int seconds = cleanTime.mid(4, 2).toInt(&okTime);
 
-    if (ok && QTime::isValid(hours, minute, seconds)) {
+    if (okTime && QTime::isValid(hours, minute, seconds)) {
       time = QTime(hours, minute, seconds);
     }
   }
 
   QDate date;
   if (!dateStr.isEmpty() && dateStr.length() == 6) {
-    bool ok;
-    int day = dateStr.mid(0, 2).toInt(&ok);
-    int month = dateStr.mid(2, 2).toInt(&ok);
-    int year = 2000 + dateStr.mid(4, 2).toInt(&ok);
+    int day = dateStr.mid(0, 2).toInt(&okDate);
+    int month = dateStr.mid(2, 2).toInt(&okDate);
+    int year = 2000 + dateStr.mid(4, 2).toInt(&okDate);
 
-    if (ok && QDate::isValid(year, month, day)) {
+    if (okDate && QDate::isValid(year, month, day)) {
       date = QDate(year, month, day);
     }
   }
-  if (date.isValid() && time.isValid()) {
+  if (okTime && okDate && date.isValid() && time.isValid()) {
     return QDateTime(date, time, Qt::UTC);
   }
-  return QDateTime();
+  return QDateTime::currentDateTime();
 }
 
 double CSerialHandler::convertToDecimal(const QString& coord, const QString& dir) {
@@ -186,21 +186,13 @@ double CSerialHandler::convertToDecimal(const QString& coord, const QString& dir
 
   if (dir == "S" || dir == "W")
     decimal *= -1;
-  qDebug() << "Converted" << coord << dir << "to" << decimal;
   return decimal;
 }
 
-void CSerialHandler::logToCSV(const QGeoCoordinate& coord, const QDateTime& dateTime) {
-
-  QFile file("gps_data.csv");
-
-  if (file.open(QIODevice::Append | QIODevice::Text)) {
-    QTextStream out(&file);
-    out << coord.latitude() << "," << coord.longitude() << "," << dateTime.toString(Qt::ISODate) << "\n";
-    file.close();
-  } else {
-    qWarning() << "Failed to open CSV file for logging";
-  }
+double CSerialHandler::convertToKiloMeterPerHour(double& speed) {
+  double kmphSpeed;
+  kmphSpeed = speed * 1.852;
+  return kmphSpeed;
 }
 
 
@@ -220,4 +212,16 @@ QStringList CSerialHandler::sentence() const {
 void CSerialHandler::addNMEASentence(const QString& sentence) {
   m_sentence.append(sentence);
   emit sentenceChanged();
+}
+
+double CSerialHandler::compassHeading() const {
+  return m_compassHeading;
+}
+
+double CSerialHandler::speed() const {
+  return m_speed;
+}
+
+int CSerialHandler::satelliteCount() const {
+  return m_satelliteCount;
 }

@@ -1,4 +1,4 @@
-QT += quick core
+QT += quick core sql
 QT += serialport location positioning
 
 # You can make your code fail to compile if it uses deprecated APIs.
@@ -6,6 +6,7 @@ QT += serialport location positioning
 #DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000    # disables all the APIs deprecated before Qt 6.0.0
 
 SOURCES += \
+        database.cpp \
         main.cpp \
         serialhandler.cpp \
         serialhandler.cpp
@@ -24,5 +25,9 @@ else: unix:!android: target.path = /opt/$${TARGET}/bin
 !isEmpty(target.path): INSTALLS += target
 
 HEADERS += \
+    database.h \
     serialhandler.h \
     serialhandler.h
+
+DISTFILES += \
+    assets/compass.png

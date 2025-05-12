@@ -1,7 +1,9 @@
 <RCC>
     <qresource prefix="/">
         <file>main.qml</file>
-        <file>mapView.qml</file>
-        <file>gpsData.qml</file>
+        <file>CompassView.qml</file>
+        <file>assets/needle.png</file>
+        <file>assets/compass_view.png</file>
+        <file>assets/location_pin.png</file>
     </qresource>
 </RCC>
